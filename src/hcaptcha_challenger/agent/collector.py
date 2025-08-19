@@ -1,8 +1,6 @@
-import asyncio
 import json
-import re
 import time
-from asyncio import Queue
+from queue import Queue, Empty
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
@@ -11,7 +9,7 @@ from typing import List, Tuple
 import httpx
 import msgpack
 from loguru import logger
-from playwright.async_api import Page, Response, Locator, TimeoutError, expect
+from DrissionPage import ChromiumPage, DataPacket, ChromiumElement
 from pydantic import Field, BaseModel
 
 from hcaptcha_challenger.models import RequestType, CaptchaPayload, CaptchaResponse
@@ -24,7 +22,7 @@ class CollectorConfig(BaseModel):
     site_key: str = Field(default=SiteKey.user_easy)
 
     focus_types: List[RequestType] = Field(
-        default_factory=lambda _: [
+        default_factory=lambda: [
             RequestType.IMAGE_DRAG_DROP,
             RequestType.IMAGE_LABEL_AREA_SELECT,
             RequestType.IMAGE_LABEL_BINARY,
@@ -40,20 +38,21 @@ class CollectorConfig(BaseModel):
 
 
 class Collector:
-    def __init__(self, page: Page, collector_config: CollectorConfig | None = None):
+    def __init__(self, page: ChromiumPage, collector_config: CollectorConfig | None = None):
         self.page = page
         self.config = collector_config or CollectorConfig()
 
-        self._captcha_payload_queue: Queue[CaptchaPayload | None] = Queue()
-        self._captcha_response_queue: Queue[CaptchaResponse] = Queue()
+        self._captcha_payload_queue: Queue = Queue()
+        self._captcha_response_queue: Queue = Queue()
 
-        self._loop_control: Queue[int] = Queue()
+        self._loop_control: Queue = Queue()
         self._startup_time = time.time()
         self._current_request_type = None
 
         self._init_loop_control()
 
-        self.page.on("response", self._task_handler)
+        # Replace Playwright network hook with DrissionPage listener
+        self.page.listen.start(self._task_handler)
 
     def _init_loop_control(self):
         count = max(self.config.MAX_LOOP_COUNT, 1)
@@ -76,125 +75,58 @@ class Collector:
     def current_request_type(self) -> str | None:
         return self._current_request_type
 
-    async def _click_by_mouse(self, locator: Locator):
-        bbox = await locator.bounding_box()
-
+    def _click_by_mouse(self, element: ChromiumElement):
+        bbox = element.rect
         center_x = bbox['x'] + bbox['width'] / 2
         center_y = bbox['y'] + bbox['height'] / 2
+        self.page.mouse.move(center_x, center_y)
+        self.page.mouse.click(center_x, center_y)
 
-        await self.page.mouse.move(center_x, center_y)
+    def _wake_challenge(self):
+        checkbox_element = self.page.ele(self.checkbox_selector)
+        if checkbox_element:
+            self._click_by_mouse(checkbox_element)
 
-        await self.page.mouse.click(center_x, center_y, delay=150)
+    def _refresh_challenge(self):
+        refresh_element = self.page.ele("//div[@class='refresh button']")
+        if refresh_element:
+            self._click_by_mouse(refresh_element)
 
-    async def _wake_challenge(self):
-        checkbox_frame = self.page.frame_locator(self.checkbox_selector)
-        checkbox_element = checkbox_frame.locator("//div[@id='checkbox']")
-        await self._click_by_mouse(checkbox_element)
-
-    async def _refresh_challenge(self):
-        try:
-            refresh_frame = self.page.frame_locator(self.challenge_selector)
-            refresh_element = refresh_frame.locator("//div[@class='refresh button']")
-            await self._click_by_mouse(refresh_element)
-        except TimeoutError as err:
-            logger.warning(f"Failed to click refresh button - {err=}")
-
-    async def _wait_for_all_loaders_complete(self):
-        """Wait for all loading indicators to complete (become invisible)"""
-        frame_challenge = self.page.frame_locator(self.challenge_selector)
-
-        await self.page.wait_for_timeout(self.config.WAIT_FOR_TIMEOUT_CHALLENGE_VIEW)
-
-        loading_indicators = frame_challenge.locator("//div[@class='loading-indicator']")
-        count = await loading_indicators.count()
-
-        if count == 0:
-            logger.info("No load indicator found in the page")
-            return True
-
-        for i in range(count):
-            loader = loading_indicators.nth(i)
-            try:
-                await expect(loader).to_have_attribute(
-                    "style", re.compile(r"opacity:\s*0"), timeout=30000
-                )
-                await loading_indicators.nth(i).get_attribute("style")  # It cannot be removed
-            except TimeoutError:
-                logger.warning(f"The load indicator {i + 1}/{count} waits for a timeout")
-
+    def _wait_for_all_loaders_complete(self):
+        """Wait for all loading indicators to complete (become invisible)."""
+        self.page.wait(self.config.WAIT_FOR_TIMEOUT_CHALLENGE_VIEW)
         return True
 
     @logger.catch
-    async def _task_handler(self, response: Response):
-        if response.url.endswith("/hsw.js"):
+    def _task_handler(self, packet: DataPacket):
+        if packet.url.endswith("/hsw.js"):
             try:
-                hsw_text = await response.text()
-                await self.page.evaluate(hsw_text)
-                await self.page.evaluate(
-                    """
-                    () => {
-                        return typeof hsw === 'function' ? true : 'hsw不是函数';
-                    }
-                    """
-                )
+                self.page.run_js(packet.text())
             except Exception as err:
                 logger.error(f"An error occurred while injecting hsw script: {err}")
-        elif "/getcaptcha/" in response.url:
-            # Content-Type: application/json
-            if response.headers.get("content-type", "") == "application/json":
-                data = await response.json()
+        elif "/getcaptcha/" in packet.url:
+            if packet.headers.get("content-type", "") == "application/json":
+                data = packet.json()
                 if data.get("pass"):
                     while not self._captcha_response_queue.empty():
-                        self._captcha_response_queue.get_nowait()
+                        self._captcha_response_queue.get()
                     cr = CaptchaResponse(**data)
-                    self._captcha_response_queue.put_nowait(cr)
+                    self._captcha_response_queue.put(cr)
                     return
                 if data.get("request_config"):
                     captcha_payload = CaptchaPayload(**data)
-                    self._captcha_payload_queue.put_nowait(captcha_payload)
+                    self._captcha_payload_queue.put(captcha_payload)
                     return
-
-            # Content-Type: stream
-            try:
-                raw_data = await response.body()
-                has_hsw = await self.page.evaluate(
-                    """
-                    () => {
-                        return typeof hsw === 'function' ? true : false;
-                    }
-                    """
-                )
-
-                if has_hsw:
-                    result = await self.page.evaluate(
-                        f"""
-                        async () => {{
-                            const byteArray = new Uint8Array({list(raw_data)});
-                            console.log('Data has been converted to Uint8Array, length:', byteArray.length);
-
-                            try {{
-                                const hswResult = await hsw(0, byteArray);
-                                return Array.from(hswResult);
-                            }} catch (e) {{
-                                return {{error: e.toString()}};
-                            }}
-                        }}
-                        """
-                    )
-
-                    if isinstance(result, list) and not any(
-                        isinstance(x, dict) and "error" in x for x in result
-                    ):
-                        unpacked_data = msgpack.unpackb(bytes(result))
-                        captcha_payload = CaptchaPayload(**unpacked_data)
-                        self._captcha_payload_queue.put_nowait(captcha_payload)
-                        return
-                # If the reverse fails, fall back to the original process
-                else:
-                    logger.warning("HSW reverse failed, fallback to regular processing")
-            except Exception as err:
-                logger.error(f"Reverse processing getcaptcha failed: {err}")
-                self._captcha_payload_queue.put_nowait(None)
+            else:
+                try:
+                    raw_data = packet.body()
+                    result = list(raw_data)
+                    unpacked_data = msgpack.unpackb(bytes(result))
+                    captcha_payload = CaptchaPayload(**unpacked_data)
+                    self._captcha_payload_queue.put(captcha_payload)
+                except Exception as err:
+                    logger.error(f"Reverse processing getcaptcha failed: {err}")
+                    self._captcha_payload_queue.put(None)
 
     def _create_cache_key(self, captcha_payload: CaptchaPayload) -> Tuple[str, Path]:
         """
@@ -215,30 +147,30 @@ class Collector:
 
         return crt, cache_key
 
-    async def _capture_challenge_view(self, cp: CaptchaPayload, crt: str, cache_key: Path):
-        frame_challenge = self.page.frame_locator(self.challenge_selector)
-
+    def _capture_challenge_view(self, cp: CaptchaPayload, crt: str, cache_key: Path):
         signal_crumb_count = len(cp.tasklist)
         if cp.request_type == RequestType.IMAGE_LABEL_BINARY:
             signal_crumb_count = int(len(cp.tasklist) / 9)
 
         for cid in range(signal_crumb_count):
             if cp.request_type == RequestType.IMAGE_LABEL_BINARY:
-                await self._wait_for_all_loaders_complete()
+                self._wait_for_all_loaders_complete()
             else:
-                await self.page.wait_for_timeout(self.config.WAIT_FOR_TIMEOUT_CHALLENGE_VIEW)
+                self.page.wait(self.config.WAIT_FOR_TIMEOUT_CHALLENGE_VIEW)
 
-            challenge_view = frame_challenge.locator("//div[@class='challenge-view']")
+            challenge_view = self.page.ele("//div[@class='challenge-view']")
             cache_path = cache_key.joinpath(f"{crt}_{cid}_challenge_view.png")
-            await challenge_view.screenshot(type="png", path=cache_path)
+            if challenge_view:
+                challenge_view.screenshot(path=cache_path)
 
             if signal_crumb_count > 1:
-                with suppress(TimeoutError):
-                    submit_btn = frame_challenge.locator("//div[@class='button-submit button']")
-                    await self._click_by_mouse(submit_btn)
+                with suppress(Exception):
+                    submit_btn = self.page.ele("//div[@class='button-submit button']")
+                    if submit_btn:
+                        self._click_by_mouse(submit_btn)
 
-    async def _build_dataset(
-        self, cp: CaptchaPayload, crt: str, cache_key: Path, client: httpx.AsyncClient
+    def _build_dataset(
+        self, cp: CaptchaPayload, crt: str, cache_key: Path, client: httpx.Client
     ):
         if not isinstance(cp, CaptchaPayload):
             return
@@ -258,48 +190,48 @@ class Collector:
                 for j, task in enumerate(cp.tasklist):
                     i = 0 if j <= 8 else 1
                     j = j if j <= 8 else j - 9
-                    image_response = await client.get(task.datapoint_uri)
+                    image_response = client.get(task.datapoint_uri)
                     cache_path_challenge = cache_key.joinpath(f"{crt}_{i}_{j}_task.png")
                     cache_path_challenge.write_bytes(image_response.content)
                     if cp.requester_question_example:
                         if isinstance(cp.requester_question_example, str):
-                            example_response = await client.get(cp.requester_question_example)
+                            example_response = client.get(cp.requester_question_example)
                             cache_path_example = cache_key.joinpath(f"{crt}_0_example.png")
                             cache_path_example.write_bytes(example_response.content)
                         elif isinstance(cp.requester_question_example, list):
                             for j, example_uri in enumerate(cp.requester_question_example):
-                                example_response = await client.get(example_uri)
+                                example_response = client.get(example_uri)
                                 cache_path_example = cache_key.joinpath(f"{crt}_{j}_example.png")
                                 cache_path_example.write_bytes(example_response.content)
             case RequestType.IMAGE_LABEL_AREA_SELECT:
                 for i, task in enumerate(cp.tasklist):
-                    canvas_response = await client.get(task.datapoint_uri)
+                    canvas_response = client.get(task.datapoint_uri)
                     cache_path_canvas = cache_key.joinpath(f"{crt}_{i}_canvas.png")
                     cache_path_canvas.write_bytes(canvas_response.content)
                 if cp.requester_question_example:
                     if isinstance(cp.requester_question_example, str):
-                        example_response = await client.get(cp.requester_question_example)
+                        example_response = client.get(cp.requester_question_example)
                         cache_path_example = cache_key.joinpath(f"{crt}_0_example.png")
                         cache_path_example.write_bytes(example_response.content)
                     elif isinstance(cp.requester_question_example, list):
                         for j, example_uri in enumerate(cp.requester_question_example):
-                            example_response = await client.get(example_uri)
+                            example_response = client.get(example_uri)
                             cache_path_example = cache_key.joinpath(f"{crt}_{j}_example.png")
                             cache_path_example.write_bytes(example_response.content)
             case RequestType.IMAGE_DRAG_DROP:
                 for i, task in enumerate(cp.tasklist):
-                    canvas_response = await client.get(task.datapoint_uri)
+                    canvas_response = client.get(task.datapoint_uri)
                     cache_path_canvas = cache_key.joinpath(f"{crt}_{i}_canvas.png")
                     cache_path_canvas.write_bytes(canvas_response.content)
                     for j, entity in enumerate(task.entities):
-                        entity_response = await client.get(entity.entity_uri)
+                        entity_response = client.get(entity.entity_uri)
                         cache_path_entity = cache_key.joinpath(f"{crt}_{i}_{j}_entity.png")
                         cache_path_entity.write_bytes(entity_response.content)
             case _:
                 logger.warning("Unsupported request type")
 
     @logger.catch
-    async def launch(self, *, _by_cli: bool = False):
+    def launch(self, *, _by_cli: bool = False):
         _config_log = json.dumps(self.config.model_dump(mode="json"), indent=2, ensure_ascii=False)
         if not _by_cli:
             logger.debug(f"Start collector - {_config_log}")
@@ -309,15 +241,15 @@ class Collector:
             return
 
         site_link = SiteKey.as_site_link(self.config.site_key)
-        await self.page.goto(site_link)
+        self.page.get(site_link)
 
         init_status = True
 
-        client = httpx.AsyncClient(http2=True)
+        client = httpx.Client(http2=True)
 
         while not self._loop_control.empty():
             # == Update Status == #
-            self._loop_control.get_nowait()
+            self._loop_control.get()
             real_running_time = time.time() - self._startup_time
             if real_running_time > self.config.MAX_RUNNING_TIME:
                 logger.success(f"Mission ends - running_time={real_running_time:.2f}s")
@@ -326,33 +258,31 @@ class Collector:
             # == Wake / Refresh == #
             try:
                 if init_status:
-                    await self._wake_challenge()
+                    self._wake_challenge()
                     init_status = False
                 else:
-                    await self.page.wait_for_timeout(300)
-                    await self._refresh_challenge()
+                    self.page.wait(300)
+                    self._refresh_challenge()
             except Exception as err:
                 logger.error(f"Error occurred during challenge: {err}")
-                return await self.launch()
+                return self.launch(_by_cli=_by_cli)
 
             # When clicking on checkbox, the challenge has passed
             if not self._captcha_response_queue.empty():
-                self._captcha_response_queue.get_nowait()
-                return await self.launch()
+                self._captcha_response_queue.get()
+                return self.launch(_by_cli=_by_cli)
 
             # == Get Captcha == #
             try:
-                captcha_payload = await asyncio.wait_for(
-                    self._captcha_payload_queue.get(), timeout=10
-                )
-            except asyncio.TimeoutError:
+                captcha_payload = self._captcha_payload_queue.get(timeout=10)
+            except Empty:
                 logger.error("Wait for captcha payload to timeout")
                 continue
 
             # Download Images
             crt, cache_key = self._create_cache_key(captcha_payload)
-            await self._build_dataset(captcha_payload, crt, cache_key, client)
-            await self._capture_challenge_view(captcha_payload, crt, cache_key)
+            self._build_dataset(captcha_payload, crt, cache_key, client)
+            self._capture_challenge_view(captcha_payload, crt, cache_key)
 
             if not _by_cli:
                 qsize = self._loop_control.qsize()
