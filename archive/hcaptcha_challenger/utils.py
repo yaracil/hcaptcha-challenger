@@ -11,7 +11,7 @@ import random
 import subprocess
 import sys
 import uuid
-from shlex import quote
+import re
 from typing import Dict, Any, Literal
 
 import pytz
@@ -157,14 +157,17 @@ class SiteKey:
 
 class PyPI:
     _prefix = f"{sys.executable} -m pip "
+    _pkg_pattern = re.compile(r"^[A-Za-z0-9_.-]+$")
 
     def __init__(self, pkg: str):
-        self.pkg = quote(pkg)
+        if not self._pkg_pattern.match(pkg):
+            raise ValueError(f"Invalid package name: {pkg}")
+        self.pkg = pkg
 
     def install(self):
-        cmd = f"{self._prefix} install -q -U {self.pkg}".split()
+        cmd = [*self._prefix.split(), "install", "-q", "-U", self.pkg]
         subprocess.check_call(cmd)
 
     def uninstall(self):
-        cmd = f"{self._prefix} uninstall -q -y {self.pkg}".split()
+        cmd = [*self._prefix.split(), "uninstall", "-q", "-y", self.pkg]
         subprocess.check_call(cmd)

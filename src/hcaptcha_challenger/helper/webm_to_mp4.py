@@ -12,79 +12,99 @@ from typing import Optional, List
 
 from loguru import logger
 
+INVALID_PATH_CHARS = set("|;&$`")
 
-def convert_webm_to_mp4(input_file: str, output_file: Optional[str] = None) -> bool:
-    """
-    Convert a single WebM file to MP4 format
+
+def _validate_path(path: str, expected_suffix: Optional[str] = None) -> Path:
+    """Validate a filesystem path and optionally enforce its suffix.
 
     Args:
-        input_file: The input WebM file path
-        output_file: The output MP4 file path, automatically generated if not specified
+        path: Path supplied by the user.
+        expected_suffix: Require the path to end with this suffix when provided.
 
     Returns:
-        bool: Is the conversion successful?
-    """
-    if not os.path.exists(input_file):
-        logger.error(f"Input file does not exist: {input_file}")
-        return False
+        Path: Resolved ``Path`` object.
 
-    if not output_file:
-        # If no output file is specified, the same file name is used but the extension is changed to .mp4
-        output_file = str(Path(input_file).with_suffix('.mp4'))
+    Raises:
+        ValueError: If the path contains disallowed characters or does not match the
+            expected suffix.
+    """
+
+    if any(c in path for c in INVALID_PATH_CHARS):
+        raise ValueError(f"Unsafe path: {path}")
+
+    p = Path(path).expanduser().resolve()
+    if expected_suffix and p.suffix.lower() != expected_suffix:
+        raise ValueError(f"Invalid suffix for {p}: expected {expected_suffix}")
+    return p
+
+
+def convert_webm_to_mp4(input_file: str, output_file: Optional[str] = None) -> bool:
+    """Convert a single WebM file to MP4 format with basic path validation."""
 
     try:
-        logger.info(f"Converting: {input_file} -> {output_file}")
+        input_path = _validate_path(input_file, ".webm")
+        output_path = (
+            _validate_path(output_file, ".mp4") if output_file else input_path.with_suffix(".mp4")
+        )
+    except ValueError as exc:
+        logger.error(str(exc))
+        return False
 
-        # Use ffmpeg for conversion
-        cmd = [
-            'ffmpeg',
-            '-i',
-            input_file,  # 输入文件
-            '-c:v',
-            'libx264',  # 视频编码器
-            '-c:a',
-            'aac',  # 音频编码器
-            '-strict',
-            'experimental',
-            '-b:a',
-            '192k',  # 音频比特率
-            '-y',  # 覆盖输出文件（如果存在）
-            output_file,
-        ]
+    if not input_path.exists():
+        logger.error(f"Input file does not exist: {input_path}")
+        return False
 
-        # 执行命令
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        import ffmpeg
 
-        if result.returncode != 0:
-            logger.error(f"Conversion failed: {result.stderr}")
-            return False
+        logger.info(f"Converting: {input_path} -> {output_path}")
 
-        logger.success(f"Conversion successfully: {output_file}")
+        (
+            ffmpeg.input(str(input_path))
+            .output(
+                str(output_path),
+                vcodec="libx264",
+                acodec="aac",
+                audio_bitrate="192k",
+            )
+            .overwrite_output()
+            .run(capture_stdout=True, capture_stderr=True)
+        )
+
+        logger.success(f"Conversion successfully: {output_path}")
         return True
 
-    except Exception as e:
-        logger.exception(f"An error occurred during the conversion process: {str(e)}")
+    except ffmpeg.Error as e:  # type: ignore[name-defined]
+        logger.error(
+            f"Conversion failed: {e.stderr.decode('utf-8') if getattr(e, 'stderr', None) else e}"
+        )
+        return False
+    except Exception as e:  # pragma: no cover - unexpected errors
+        logger.exception(f"An error occurred during the conversion process: {e}")
         return False
 
 
 def batch_convert(input_dir: str, output_dir: Optional[str] = None) -> None:
-    """
-    Batch convert all WebM files in the directory
+    """Batch convert all WebM files in the directory."""
 
-    Args:
-        input_dir: Input directory containing WebM files
-        output_dir: The directory that outputs the MP4 file, and if not specified, the input directory is used.
-    """
-    if not os.path.isdir(input_dir):
-        logger.error(f"The input directory does not exist: {input_dir}")
+    try:
+        input_dir_path = _validate_path(input_dir)
+        output_dir_path = _validate_path(output_dir) if output_dir else None
+    except ValueError as exc:
+        logger.error(str(exc))
         return
 
-    if output_dir and not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-        logger.info(f"Create output directory: {output_dir}")
+    if not input_dir_path.is_dir():
+        logger.error(f"The input directory does not exist: {input_dir_path}")
+        return
+
+    if output_dir_path and not output_dir_path.exists():
+        output_dir_path.mkdir(parents=True)
+        logger.info(f"Create output directory: {output_dir_path}")
 
     # Get all .webm files
-    webm_files = list(Path(input_dir).glob("**/*.webm"))
+    webm_files = list(input_dir_path.glob("**/*.webm"))
 
     if not webm_files:
         logger.warning(f"No .webm file was found in {input_dir}")
@@ -94,10 +114,10 @@ def batch_convert(input_dir: str, output_dir: Optional[str] = None) -> None:
 
     success_count = 0
     for webm_file in webm_files:
-        if output_dir:
+        if output_dir_path:
             # Calculate relative paths and maintain directory structure
-            rel_path = webm_file.relative_to(input_dir)
-            output_file = Path(output_dir) / rel_path.with_suffix('.mp4')
+            rel_path = webm_file.relative_to(input_dir_path)
+            output_file = output_dir_path / rel_path.with_suffix('.mp4')
 
             # Make sure the output directory exists
             os.makedirs(output_file.parent, exist_ok=True)
@@ -143,25 +163,22 @@ def invoke(
     results = []
 
     if is_directory:
-        # Batch conversion directory
-        if not os.path.isdir(input_path):
-            raise ValueError(f"Input directory does not exist: {input_path}")
+        input_dir = _validate_path(input_path)
+        output_dir = _validate_path(output_path) if output_path else None
 
-        if output_path and not os.path.exists(output_path):
-            os.makedirs(output_path)
+        if not input_dir.is_dir():
+            raise ValueError(f"Input directory does not exist: {input_dir}")
 
-        # Get all .webm files
-        webm_files = list(Path(input_path).glob("**/*.webm"))
+        if output_dir and not output_dir.exists():
+            output_dir.mkdir(parents=True)
+
+        webm_files = list(input_dir.glob("**/*.webm"))
 
         for webm_file in webm_files:
-            if output_path:
-                # Calculate relative paths and maintain directory structure
-                rel_path = webm_file.relative_to(input_path)
-                output_file = Path(output_path) / rel_path.with_suffix('.mp4')
-
-                # Make sure the output directory exists
-                os.makedirs(output_file.parent, exist_ok=True)
-
+            if output_dir:
+                rel_path = webm_file.relative_to(input_dir)
+                output_file = output_dir / rel_path.with_suffix('.mp4')
+                output_file.parent.mkdir(parents=True, exist_ok=True)
                 success = convert_webm_to_mp4(str(webm_file), str(output_file))
             else:
                 output_file = webm_file.with_suffix('.mp4')
@@ -171,15 +188,19 @@ def invoke(
                 {"input_file": str(webm_file), "output_file": str(output_file), "success": success}
             )
     else:
-        # Single file conversion
-        if not os.path.exists(input_path):
-            raise ValueError(f"Input file does not exist: {input_path}")
+        input_file = _validate_path(input_path, ".webm")
+        output_file = _validate_path(output_path, ".mp4") if output_path else None
 
-        success = convert_webm_to_mp4(input_path, output_path)
+        if not input_file.exists():
+            raise ValueError(f"Input file does not exist: {input_file}")
 
-        if not output_path:
-            output_path = str(Path(input_path).with_suffix('.mp4'))
+        success = convert_webm_to_mp4(str(input_file), str(output_file) if output_file else None)
 
-        results.append({"input_file": input_path, "output_file": output_path, "success": success})
+        if not output_file:
+            output_file = input_file.with_suffix('.mp4')
+
+        results.append(
+            {"input_file": str(input_file), "output_file": str(output_file), "success": success}
+        )
 
     return results
