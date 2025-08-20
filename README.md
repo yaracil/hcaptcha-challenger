@@ -87,3 +87,9 @@ POST /solve
 `target_url` lets the server pick the page whose URL best matches the provided
 value when multiple tabs are open; if several pages match equally, the first one
 is used.
+
+To run the API locally, install the server requirements:
+
+```bash
+pip install -r requirements-api.txt
+```
