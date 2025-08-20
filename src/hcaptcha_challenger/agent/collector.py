@@ -196,6 +196,14 @@ class Collector:
                 logger.error(f"Reverse processing getcaptcha failed: {err}")
                 self._captcha_payload_queue.put_nowait(None)
 
+    @staticmethod
+    def _slugify(value: str) -> str:
+        """Return a filesystem-friendly representation of ``value``."""
+        value = re.sub(r"[\\/]+", "_", value)
+        value = re.sub(r"[^A-Za-z0-9_-]+", "_", value)
+        value = re.sub(r"_+", "_", value).strip("_")
+        return value or "unknown"
+
     def _create_cache_key(self, captcha_payload: CaptchaPayload) -> Tuple[str, Path]:
         """
 
@@ -205,8 +213,8 @@ class Collector:
         Returns: ./dataset / require_type / prompt / current_time
 
         """
-        request_type = captcha_payload.request_type.value
-        prompt = captcha_payload.get_requester_question()
+        request_type = self._slugify(captcha_payload.request_type.value)
+        prompt = self._slugify(captcha_payload.get_requester_question())
         current_datetime = datetime.now()
         current_time = current_datetime.strftime("%Y%m%d/%Y%m%d%H%M%S%f")
 
