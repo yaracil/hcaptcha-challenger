@@ -69,3 +69,21 @@ I would like to express my sincere gratitude to all the contributors.
 - [Anthropic/MCP](https://github.com/modelcontextprotocol)
 - [Google/A2A](https://github.com/google/A2A)
 - [Google/Gemini](https://ai.google.dev/gemini-api/docs/models#gemini-2.5-pro-preview-03-25)
+
+## Solver API
+
+`hcaptcha-challenger` exposes a small FastAPI service capable of solving
+challenges through an existing Chrome session connected via CDP.
+
+```bash
+POST /solve
+{
+  "cdp_url": "ws://localhost:9222/devtools/browser/...",
+  "target_url": "https://example.com/login",
+  "timeout": 120
+}
+```
+
+`target_url` lets the server pick the page whose URL best matches the provided
+value when multiple tabs are open; if several pages match equally, the first one
+is used.

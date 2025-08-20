@@ -6,7 +6,7 @@ import os
 import psutil
 from fastapi import FastAPI, HTTPException, Request
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, HttpUrl
 
 from .browser import BrowserProvider
 from .solver import solve_challenge
@@ -20,6 +20,9 @@ LOAD_THRESHOLD = float(os.getenv("LOAD_THRESHOLD", "70"))
 
 class SolveRequest(BaseModel):
     cdp_url: str = Field(..., description="WebSocket endpoint for Chrome DevTools")
+    target_url: HttpUrl | None = Field(
+        default=None, description="Select page whose URL best matches this value"
+    )
     timeout: int | None = Field(default=None, description="Optional timeout in seconds")
 
 
@@ -53,12 +56,15 @@ async def solve(req: SolveRequest, request: Request) -> SolveResponse:
     async with SEMAPHORE:
         provider = BrowserProvider()
         try:
-            page = await provider.connect_over_cdp(req.cdp_url)
+            page = await provider.connect_over_cdp(req.cdp_url, req.target_url)
             if req.timeout is not None:
                 cr = await asyncio.wait_for(solve_challenge(page), timeout=req.timeout)
             else:
                 cr = await solve_challenge(page)
             return SolveResponse(token=cr.c, details=cr.model_dump(by_alias=True))
+        except ValueError as exc:
+            logger.exception("No matching page")
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         except Exception as exc:  # pragma: no cover - network/browser errors
             logger.exception("Solve failed")
             raise HTTPException(status_code=500, detail="Solve failed") from exc
