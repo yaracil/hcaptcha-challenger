@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import re
 import time
@@ -36,6 +37,11 @@ class CollectorConfig(BaseModel):
     MAX_RUNNING_TIME: float = Field(default=300, description="Collector single run time (second)")
     WAIT_FOR_TIMEOUT_CHALLENGE_VIEW: float = Field(
         default=2000, description="Waiting for the challenge view to render (millisecond)"
+    )
+
+    hsw_allowed_hashes: List[str] = Field(
+        default_factory=list,
+        description="SHA256 hashes of trusted hsw.js scripts",
     )
 
 
@@ -129,6 +135,12 @@ class Collector:
         if response.url.endswith("/hsw.js"):
             try:
                 hsw_text = await response.text()
+                hsw_hash = hashlib.sha256(hsw_text.encode("utf-8")).hexdigest()
+                if hsw_hash not in self.config.hsw_allowed_hashes:
+                    logger.error(
+                        f"Validation failed for hsw.js: unexpected sha256 {hsw_hash}"
+                    )
+                    return
                 await self.page.evaluate(hsw_text)
                 await self.page.evaluate(
                     """
