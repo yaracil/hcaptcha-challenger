@@ -49,6 +49,7 @@ Changelog = "https://github.com/QIN2DIM/hcaptcha-challenger/blob/master/CHANGELO
 [project.optional-dependencies]
 server = [
     "fastapi[all]>=0.115.12",
+    "psutil>=5.9.0",
 ]
 dataset = [
     "typer"
