@@ -20,7 +20,8 @@ COPY pyproject.toml README.md requirements-api.txt ./
 COPY src ./src
 
 # Install python dependencies
-RUN uv pip install --system --no-cache-dir -r requirements-api.txt
+RUN uv pip install --system --no-cache-dir -r requirements-api.txt \
+ && uv pip install --system .
 
 ENV HOST=0.0.0.0
 ENV PORT=8000
