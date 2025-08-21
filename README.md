@@ -93,3 +93,7 @@ To run the API locally, install the server requirements:
 ```bash
 pip install -r requirements-api.txt
 ```
+
+An interactive Swagger UI is available at `http://localhost:8000/docs` when the
+server is running. For detailed request and response examples, see
+[`docs/solver-api.md`](docs/solver-api.md).
