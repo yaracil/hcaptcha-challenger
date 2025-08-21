@@ -12,13 +12,17 @@ The solver API connects to an existing Chrome instance over the Chrome DevTools 
 {
   "cdp_url": "ws://localhost:9222/devtools/browser/...",
   "target_url": "https://example.com/login",
-  "timeout": 120
+  "timeout": 120,
+  "pre_solve_script": "console.log(\"before\")",
+  "post_solve_script": "console.log(\"after\")"
 }
 ```
 
 - **cdp_url** *(required)* – WebSocket URL of the remote Chrome browser.
 - **target_url** *(optional)* – When multiple pages are open, the page whose URL best matches this value is used. If several pages match equally, the first one is chosen.
 - **timeout** *(optional, default 120)* – Seconds to wait for the challenge to be solved.
+- **pre_solve_script** *(optional)* – JavaScript snippet executed before the challenge is solved.
+- **post_solve_script** *(optional)* – JavaScript snippet executed after the challenge is solved.
 
 ### Response
 
@@ -57,7 +61,9 @@ curl -X POST http://localhost:8000/solve \
   -d '{
         "cdp_url": "ws://browser-host:9222/devtools/browser/...",
         "target_url": "https://example.com/login",
-        "timeout": 120
+        "timeout": 120,
+        "pre_solve_script": "console.log(\"before\")",
+        "post_solve_script": "console.log(\"after\")"
       }'
 ```
 

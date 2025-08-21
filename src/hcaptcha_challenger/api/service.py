@@ -41,10 +41,14 @@ async def solve(req: SolveRequest, request: Request) -> SolveResponse:
         async with BrowserProvider() as provider:
             try:
                 page = await provider.connect_over_cdp(req.cdp_url, req.target_url)
+                if req.pre_solve_script:
+                    await page.evaluate(req.pre_solve_script)
                 if req.timeout is not None:
                     cr = await asyncio.wait_for(solve_challenge(page), timeout=req.timeout)
                 else:
                     cr = await solve_challenge(page)
+                if req.post_solve_script:
+                    await page.evaluate(req.post_solve_script)
                 return SolveResponse(token=cr.c, details=cr.model_dump(by_alias=True))
             except ValueError as exc:
                 logger.exception("No matching page")

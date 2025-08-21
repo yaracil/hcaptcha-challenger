@@ -10,6 +10,15 @@ class SolveRequest(BaseModel):
     )
     timeout: int | None = Field(default=None, description="Optional timeout in seconds")
 
+    pre_solve_script: str | None = Field(
+        default=None,
+        description="JavaScript to run before solving the challenge",
+    )
+    post_solve_script: str | None = Field(
+        default=None,
+        description="JavaScript to run after solving the challenge",
+    )
+
 
 class SolveResponse(BaseModel):
     token: str

@@ -80,13 +80,17 @@ POST /solve
 {
   "cdp_url": "ws://localhost:9222/devtools/browser/...",
   "target_url": "https://example.com/login",
-  "timeout": 120
+  "timeout": 120,
+  "pre_solve_script": "console.log(\"before\")",
+  "post_solve_script": "console.log(\"after\")"
 }
 ```
 
 `target_url` lets the server pick the page whose URL best matches the provided
 value when multiple tabs are open; if several pages match equally, the first one
 is used.
+`pre_solve_script` and `post_solve_script` are optional JavaScript snippets that run before
+and after the captcha is solved.
 
 To run the API locally, install the server requirements:
 
