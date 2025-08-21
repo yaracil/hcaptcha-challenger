@@ -1,0 +1,14 @@
+-e .
+fastapi[all]>=0.115.12
+psutil>=5.9.0
+playwright
+opencv-python>=4.11.0.88,<5.0
+pillow>=11.1.0
+msgpack>=1.1.1,<2.0.0
+typer>=0.15.4
+matplotlib>=3.10.3
+google-genai>=1.30.0
+pytz>=2025.2
+httpx[http2]>=0.28.1
+loguru>=0.7.3
+pydantic-settings>=2.10.1

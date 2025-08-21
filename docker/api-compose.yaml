@@ -1,0 +1,11 @@
+name: hcaptcha-solver-api
+services:
+  solver-api:
+    build:
+      context: ..
+      dockerfile: docker/api.Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+    restart: unless-stopped
