@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import sys
 from difflib import get_close_matches
 
 from playwright.async_api import Browser, Page, async_playwright
@@ -20,6 +22,8 @@ class BrowserProvider:
         available or when none of them match ``target_url``.
         """
 
+        if sys.platform.startswith("win"):
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
         self._playwright = await async_playwright().start()
         browser: Browser = await self._playwright.chromium.connect_over_cdp(cdp_url)
         context = browser.contexts[0] if browser.contexts else await browser.new_context()
