@@ -38,19 +38,17 @@ async def solve(req: SolveRequest, request: Request) -> SolveResponse:
         raise HTTPException(status_code=503, detail="Server busy")
 
     async with SEMAPHORE:
-        provider = BrowserProvider()
-        try:
-            page = await provider.connect_over_cdp(req.cdp_url, req.target_url)
-            if req.timeout is not None:
-                cr = await asyncio.wait_for(solve_challenge(page), timeout=req.timeout)
-            else:
-                cr = await solve_challenge(page)
-            return SolveResponse(token=cr.c, details=cr.model_dump(by_alias=True))
-        except ValueError as exc:
-            logger.exception("No matching page")
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except Exception as exc:  # pragma: no cover - network/browser errors
-            logger.exception("Solve failed")
-            raise HTTPException(status_code=500, detail="Solve failed") from exc
-        finally:
-            await provider.close()
+        async with BrowserProvider() as provider:
+            try:
+                page = await provider.connect_over_cdp(req.cdp_url, req.target_url)
+                if req.timeout is not None:
+                    cr = await asyncio.wait_for(solve_challenge(page), timeout=req.timeout)
+                else:
+                    cr = await solve_challenge(page)
+                return SolveResponse(token=cr.c, details=cr.model_dump(by_alias=True))
+            except ValueError as exc:
+                logger.exception("No matching page")
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            except Exception as exc:  # pragma: no cover - network/browser errors
+                logger.exception("Solve failed")
+                raise HTTPException(status_code=500, detail="Solve failed") from exc

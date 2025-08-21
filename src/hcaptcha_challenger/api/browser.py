@@ -11,7 +11,19 @@ class BrowserProvider:
     """Provide pages from external or internal browsers."""
 
     def __init__(self) -> None:
+        self._playwright_cm = None
         self._playwright = None
+
+    async def __aenter__(self) -> BrowserProvider:
+        if sys.platform.startswith("win"):
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        self._playwright_cm = async_playwright()
+        self._playwright = await self._playwright_cm.__aenter__()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        if self._playwright_cm is not None:
+            await self._playwright_cm.__aexit__(exc_type, exc, tb)
 
     async def connect_over_cdp(self, cdp_url: str, target_url: str | None = None) -> Page:
         """Connect to an external browser via CDP and pick a page.
@@ -22,9 +34,6 @@ class BrowserProvider:
         available or when none of them match ``target_url``.
         """
 
-        if sys.platform.startswith("win"):
-            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-        self._playwright = await async_playwright().start()
         browser: Browser = await self._playwright.chromium.connect_over_cdp(cdp_url)
         context = browser.contexts[0] if browser.contexts else await browser.new_context()
         pages = context.pages
@@ -42,7 +51,3 @@ class BrowserProvider:
 
     async def launch_internal(self) -> Page:  # pragma: no cover - placeholder for future use
         raise NotImplementedError("Internal browser launch is not implemented yet")
-
-    async def close(self) -> None:
-        if self._playwright is not None:
-            await self._playwright.stop()
